@@ -1,7 +1,6 @@
 import unittest
 import numpy as np
-from circlepacker.packer import CirclePacker, PackingConfig, PolygonGeometry
-
+from diskpack.packer import CirclePacker, PackingConfig, PolygonGeometry
 
 
 

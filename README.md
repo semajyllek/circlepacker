@@ -1,4 +1,4 @@
-# Circle Packer
+# diskpack
 
 A Python library for packing circles within arbitrary polygon boundaries.
 
@@ -7,14 +7,14 @@ A Python library for packing circles within arbitrary polygon boundaries.
 ## Installation
 
 ```bash
-pip install git+https://github.com/YOUR_USERNAME/circle-packer.git
+pip install git+https://github.com/semajyllek/diskpack.git
 ```
 
 Or clone and install locally:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/circle-packer.git
-cd circle-packer
+git clone https://github.com/semajyllek/diskpack.git
+cd diskpack
 pip install -e .
 ```
 
@@ -22,7 +22,7 @@ pip install -e .
 
 ```python
 import numpy as np
-from circle_packer import CirclePacker, PackingConfig
+from diskpack import CirclePacker, PackingConfig
 
 # Define a polygon (list of [x, y] vertices)
 square = np.array([
@@ -76,12 +76,12 @@ We subtract a configurable padding to prevent circles from touching.
 Customize the packing behavior with `PackingConfig`:
 
 ```python
-from circle_packer import PackingConfig
+from diskpack import PackingConfig
 
 config = PackingConfig(
     padding=1.5,                  # Gap between circles and boundaries
     min_radius=1.0,               # Smallest circle to place
-    patience_before_stop=200,     # Stop after this many failed attempts
+    max_failed_attempts=200,      # Stop after this many failed attempts
     sample_batch_size=50,         # Points sampled per iteration
     grid_resolution_divisor=25,   # Controls spatial index cell size
     mega_circle_threshold=0.5,    # Radius/cell_size ratio for "mega" circles
@@ -94,10 +94,36 @@ packer = CirclePacker([polygon], config)
 |-----------|---------|-------------|
 | `padding` | 1.5 | Minimum gap between circles and between circles and edges |
 | `min_radius` | 1.0 | Circles smaller than this won't be placed |
-| `patience_before_stop` | 200 | Algorithm stops after this many consecutive failed placements |
+| `max_failed_attempts` | 200 | Algorithm stops after this many consecutive failed placements |
 | `sample_batch_size` | 50 | Number of random points tested per iteration |
 | `grid_resolution_divisor` | 25 | Higher = smaller grid cells = more memory, faster lookups |
 | `mega_circle_threshold` | 0.5 | Circles with radius > cell_size × this value are tracked globally |
+
+## Progress Tracking
+
+Monitor the packing process with `verbose=True`:
+
+```python
+packer = CirclePacker([polygon], config)
+circles = packer.pack(verbose=True)
+```
+
+Output:
+```
+Placed: 25 | Failed attempts: 0/200 (0%)
+Placed: 50 | Failed attempts: 0/200 (0%)
+Placed: 75 | Failed attempts: 0/200 (0%)
+Placed: 75 | Failed attempts: 50/200 (25%)
+...
+Done! Placed: 82 | Failed attempts: 200/200 (100%)
+```
+
+You can also check progress after packing:
+
+```python
+print(packer.progress)
+# Placed: 82 | Failed attempts: 200/200 (100%)
+```
 
 ## Fixed-Radius Mode
 
@@ -172,7 +198,7 @@ for i, (x, y, r) in enumerate(packer.generate()):
 ## Performance Tips
 
 - **Increase `sample_batch_size`** for denser packings (more candidates per iteration)
-- **Decrease `patience_before_stop`** if you're okay with slightly less dense results
+- **Decrease `max_failed_attempts`** if you're okay with slightly less dense results
 - **Increase `grid_resolution_divisor`** for polygons with many small circles
 - **Use `fixed_radius`** when you know the circle size—avoids max-radius computation
 
@@ -180,7 +206,6 @@ for i, (x, y, r) in enumerate(packer.generate()):
 
 - Python 3.8+
 - NumPy ≥ 1.20
-- Matplotlib ≥ 3.5 (optional, for visualization)
 
 ## License
 
