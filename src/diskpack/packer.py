@@ -102,37 +102,24 @@ class PolygonGeometry:
     def distances_to_boundary_batch(self, points: np.ndarray) -> np.ndarray:
         """
         Vectorized distance calculation for multiple points at once.
-        
-        Args:
-            points: Array of shape (n_points, 2)
-            
-        Returns:
-            Array of shape (n_points,) with distance to nearest edge for each point
         """
         n_points = len(points)
         n_edges = len(self.edge_starts)
 
-        # Reshape for broadcasting: (n_points, 1, 2) - (n_edges, 2) -> (n_points, n_edges, 2)
         to_point = points[:, np.newaxis, :] - self.edge_starts[np.newaxis, :, :]
-
-        # Dot products: (n_points, n_edges)
         dots = np.sum(to_point * self.edge_vecs[np.newaxis, :, :], axis=2)
 
-        # Project onto edges
         with np.errstate(divide='ignore', invalid='ignore'):
             t = np.clip(dots / self.edge_lengths_sq[np.newaxis, :], 0, 1)
             t = np.where(self.edge_lengths_sq[np.newaxis, :] == 0, 0, t)
 
-        # Closest points on edges: (n_points, n_edges, 2)
         projections = (
-            self.edge_starts[np.newaxis, :, :] + 
+            self.edge_starts[np.newaxis, :, :] +
             t[:, :, np.newaxis] * self.edge_vecs[np.newaxis, :, :]
         )
 
-        # Distances: (n_points, n_edges)
         distances = np.linalg.norm(points[:, np.newaxis, :] - projections, axis=2)
 
-        # Min distance per point
         return np.min(distances, axis=1)
 
 
@@ -144,16 +131,14 @@ class SpatialIndex:
     mega_threshold: float
     grid: Dict[GridKey, List[int]] = field(default_factory=dict)
     mega_circles: List[int] = field(default_factory=list)
-    
-    # Store centers/radii arrays for vectorized lookup
+
     _centers: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
     _radii: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     def add_circle(self, index: int, center: Point, radius: float) -> None:
-        # Update arrays
         self._centers = np.vstack([self._centers, center]) if len(self._centers) > 0 else center.reshape(1, 2)
         self._radii = np.append(self._radii, radius)
-        
+
         if radius > self.cell_size * self.mega_threshold:
             self.mega_circles.append(index)
         else:
@@ -169,40 +154,18 @@ class SpatialIndex:
                 if neighbor_key in self.grid:
                     yield from self.grid[neighbor_key]
 
-    def get_nearby_indices_batch(self, points: np.ndarray) -> List[np.ndarray]:
-        """
-        Get nearby circle indices for multiple points.
-        Returns list of index arrays, one per point.
-        """
-        results = []
-        mega_set = set(self.mega_circles)
-        
-        for point in points:
-            indices = list(self.mega_circles)
-            center_key = self._get_cell_key(point)
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    neighbor_key = (center_key[0] + dx, center_key[1] + dy)
-                    if neighbor_key in self.grid:
-                        for idx in self.grid[neighbor_key]:
-                            if idx not in mega_set:
-                                indices.append(idx)
-            results.append(np.array(indices, dtype=int))
-        
-        return results
-
     def distance_to_circles(self, point: Point) -> float:
         """Get minimum distance from point to any existing circle's edge."""
         if len(self._centers) == 0:
             return float('inf')
-        
+
         indices = list(self.get_nearby_indices(point))
         if not indices:
             return float('inf')
-        
+
         centers = self._centers[indices]
         radii = self._radii[indices]
-        
+
         distances = np.linalg.norm(centers - point, axis=1) - radii
         return float(np.min(distances))
 
@@ -245,22 +208,17 @@ class CirclePacker:
         return max_radius - self.config.padding
 
     def _compute_max_radii_batch(self, points: np.ndarray) -> np.ndarray:
-        """
-        Vectorized max radius computation for multiple points.
-        """
+        """Vectorized max radius computation for multiple points."""
         if len(points) == 0:
             return np.array([])
 
-        # Boundary distances (fully vectorized)
         max_radii = self.geometry.distances_to_boundary_batch(points)
 
-        # Circle collision distances (per-point, but with vectorized distance calc)
         if len(self.centers) > 0:
             centers_arr = np.array(self.centers)
             radii_arr = np.array(self.radii)
-            
+
             for i, point in enumerate(points):
-                # Get nearby indices
                 indices = list(self.spatial_index.get_nearby_indices(point))
                 if indices:
                     nearby_centers = centers_arr[indices]
@@ -274,23 +232,20 @@ class CirclePacker:
         if len(candidates) == 0:
             return None
 
-        # Batch compute all radii
         radii = self._compute_max_radii_batch(candidates)
         fixed = self.config.fixed_radius
 
         if fixed is not None:
-            # For fixed radius, filter to valid positions and pick randomly
             valid_mask = radii >= fixed
             if not np.any(valid_mask):
                 return None
             valid_indices = np.where(valid_mask)[0]
-            best_idx = valid_indices[0]  # Take first valid (or could randomize)
+            best_idx = valid_indices[0]
             return candidates[best_idx], fixed
         else:
-            # Variable radius: pick the largest
             best_idx = np.argmax(radii)
             best_radius = radii[best_idx]
-            
+
             if best_radius >= self.config.min_radius:
                 return candidates[best_idx], best_radius
             return None
@@ -301,13 +256,95 @@ class CirclePacker:
         self.radii.append(radius)
         self.spatial_index.add_circle(idx, center, radius)
 
+    def _generate_hex_grid(self, radius: float) -> np.ndarray:
+        """
+        Generate a hexagonal grid of points within the bounding box.
+        Hex grid is the optimal packing arrangement for equal circles.
+        """
+        spacing = (radius + self.config.padding) * 2
+        dy = spacing * np.sqrt(3) / 2
+
+        min_x, min_y = self.geometry.min_coords
+        max_x, max_y = self.geometry.max_coords
+
+        # Add margin to ensure coverage
+        min_x -= spacing
+        min_y -= spacing
+        max_x += spacing
+        max_y += spacing
+
+        points = []
+        row = 0
+        y = min_y
+
+        while y <= max_y:
+            # Offset every other row by half spacing
+            x_offset = (spacing / 2) if row % 2 else 0
+            x = min_x + x_offset
+
+            while x <= max_x:
+                points.append([x, y])
+                x += spacing
+
+            y += dy
+            row += 1
+
+        return np.array(points) if points else np.empty((0, 2))
+
+    def _pack_hex_grid(self) -> List[Circle]:
+        """
+        Pack circles using hexagonal grid placement.
+        Much faster and denser than random sampling for fixed radius.
+        """
+        radius = self.config.fixed_radius
+        circles = []
+
+        # Generate hex grid
+        grid_points = self._generate_hex_grid(radius)
+
+        if len(grid_points) == 0:
+            return circles
+
+        # Filter to points inside polygon
+        inside_mask = self.geometry.contains_points(grid_points)
+        interior_points = grid_points[inside_mask]
+
+        # Filter to points with enough clearance from boundary
+        min_clearance = radius + self.config.padding
+        boundary_distances = self.geometry.distances_to_boundary_batch(interior_points)
+        valid_mask = boundary_distances >= min_clearance
+
+        valid_points = interior_points[valid_mask]
+
+        if self.config.verbose:
+            print(f"Hex grid: {len(grid_points)} total -> {len(interior_points)} inside -> {len(valid_points)} valid")
+
+        # All valid points become circles (no collision check needed - hex grid guarantees no overlap)
+        for point in valid_points:
+            self._place_circle(point, radius)
+            circles.append((float(point[0]), float(point[1]), float(radius)))
+
+        if self.config.verbose:
+            print(f"Done! Placed {len(circles)} circles")
+
+        return circles
+
     def generate(self) -> Iterator[Circle]:
         """
         Generate circles until no more can be placed.
 
+        For fixed_radius mode, uses optimized hex grid placement.
+        For variable radius mode, uses random sampling with best-fit selection.
+
         Yields:
             Tuples of (x, y, radius) for each placed circle.
         """
+        # Use hex grid for fixed radius - much faster and denser
+        if self.config.fixed_radius is not None:
+            yield from self._pack_hex_grid()
+            return
+
+        # Variable radius mode - use random sampling
         self.progress = PackingProgress(max_failed_attempts=self.config.max_failed_attempts)
 
         while self.progress.failed_attempts < self.config.max_failed_attempts:
