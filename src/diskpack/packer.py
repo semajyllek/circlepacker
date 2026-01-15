@@ -20,6 +20,7 @@ class PackingConfig:
     ray_cast_epsilon: float = 1e-10
     sample_batch_size: int = 50
     fixed_radius: Optional[float] = None
+    use_hex_grid: bool = True
     verbose: bool = False
 
 
@@ -329,22 +330,11 @@ class CirclePacker:
 
         return circles
 
-    def generate(self) -> Iterator[Circle]:
+    def _pack_random(self) -> Iterator[Circle]:
         """
-        Generate circles until no more can be placed.
-
-        For fixed_radius mode, uses optimized hex grid placement.
-        For variable radius mode, uses random sampling with best-fit selection.
-
-        Yields:
-            Tuples of (x, y, radius) for each placed circle.
+        Pack circles using random sampling.
+        Used for variable radius mode or when organic placement is desired.
         """
-        # Use hex grid for fixed radius - much faster and denser
-        if self.config.fixed_radius is not None:
-            yield from self._pack_hex_grid()
-            return
-
-        # Variable radius mode - use random sampling
         self.progress = PackingProgress(max_failed_attempts=self.config.max_failed_attempts)
 
         while self.progress.failed_attempts < self.config.max_failed_attempts:
@@ -369,6 +359,25 @@ class CirclePacker:
 
         if self.config.verbose:
             print(f"Done! {self.progress}")
+
+    def generate(self) -> Iterator[Circle]:
+        """
+        Generate circles until no more can be placed.
+
+        For fixed_radius mode with use_hex_grid=True (default), uses optimized hex grid.
+        For fixed_radius mode with use_hex_grid=False, uses random sampling for organic look.
+        For variable radius mode, uses random sampling with best-fit selection.
+
+        Yields:
+            Tuples of (x, y, radius) for each placed circle.
+        """
+        # Use hex grid for fixed radius (unless disabled)
+        if self.config.fixed_radius is not None and self.config.use_hex_grid:
+            yield from self._pack_hex_grid()
+            return
+
+        # Random sampling mode (variable radius OR fixed radius with organic placement)
+        yield from self._pack_random()
 
     def pack(self) -> List[Circle]:
         """Pack circles and return them as a list."""
